@@ -1,0 +1,6 @@
+{
+  "name": "Ondule",
+  "description": "Atelier minimaliste de dessin animé en boucle : importez vos images et tracez des traits vivants paramétrables, exportables en GIF et vidéo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
