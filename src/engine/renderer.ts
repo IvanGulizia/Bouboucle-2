@@ -34,7 +34,7 @@ interface ComputedPoint {
   width: number;
   /** Per-point alpha multiplier 0..1 for silky soft fade-in / fade-out */
   alpha: number;
-  /** Arc distance in world units (used for dots/chalk spacing) */
+  /** Arc distance in world units (used for dots/chalk/pencil/spray spacing) */
   dist: number;
 }
 
@@ -54,9 +54,7 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 function openEdgeEnvelope(u: number, isClosed: boolean, softEdges: boolean): number {
   if (!softEdges || isClosed) return 1;
   const fadeZone = 0.14;
-  const startFade = smoothstep(0, fadeZone, u);
-  const endFade = smoothstep(0, fadeZone, 1 - u);
-  return startFade * endFade;
+  return smoothstep(0, fadeZone, u) * smoothstep(0, fadeZone, 1 - u);
 }
 
 /**
@@ -73,8 +71,40 @@ function getPointNormal(points: { x: number; y: number }[], i: number): { nx: nu
 }
 
 /**
+ * Parametric symmetric taper factor along a full stroke [0..1].
+ */
+function symmetricTaper(t: number, taperAmount: number): number {
+  if (taperAmount <= 0.01) return 1;
+  const arch = Math.pow(Math.sin(Math.PI * clamp01(t)), 0.62);
+  return 1 - taperAmount + taperAmount * arch;
+}
+
+/**
+ * Directional comet/ink profile for moving ribbons:
+ * fuller leading head arriving toward the direction of motion + longer trailing tail behind,
+ * making forward travel (1st point -> last point) unmistakably clear to the eye.
+ */
+function directionalRibbonProfile(
+  ribbonT: number,
+  taperAmount: number,
+  isReversed: boolean
+): { widthMul: number; alphaMul: number } {
+  // pos = 0 at trailing tail, pos = 1 at leading head
+  const pos = isReversed ? 1 - clamp01(ribbonT) : clamp01(ribbonT);
+
+  // Leading head rises crisply over the final 18%, trailing tail tapers gracefully over 75%
+  const headCap = smoothstep(1.0, 0.8, pos);
+  const tailTaper = Math.pow(smoothstep(0.0, 0.72, pos), 0.85);
+  const profile = headCap * tailTaper;
+
+  const widthMul = 1 - taperAmount + taperAmount * profile;
+  const alphaMul = smoothstep(0.0, 0.45, pos) * smoothstep(1.0, 0.88, pos);
+  return { widthMul, alphaMul };
+}
+
+/**
  * Maps raw loop phase ∈ [0, 1) through offset, speed, loopBehavior, direction, and repeatDelay.
- * Returns { active, progress } where active=false indicates a resting/pause period.
+ * Always moves strictly from 1st point (progress 0) to last point (progress 1) when reverse === false.
  */
 function evaluateCycleClock(
   rawPhase: number,
@@ -84,59 +114,69 @@ function evaluateCycleClock(
   repeatDelay: number,
   phaseOffset: number,
   loopIndex = 0
-): { active: boolean; progress: number; finishedOnce: boolean } {
+): { active: boolean; progress: number; finishedOnce: boolean; movingBackward: boolean } {
   const offsetNorm = (phaseOffset % 100) / 100;
   const delayNorm = clamp01(repeatDelay / 100) * 0.78;
   const activeSpan = Math.max(0.18, 1 - delayNorm);
 
   if (loopBehavior === 'once') {
-    // Plays once cleanly across the first cycle (taking phaseOffset into account)
     const totalLinear = loopIndex + rawPhase - offsetNorm;
     if (totalLinear < 0) {
-      return { active: false, progress: reverse ? 1 : 0, finishedOnce: false };
+      return {
+        active: false,
+        progress: reverse ? 1 : 0,
+        finishedOnce: false,
+        movingBackward: reverse,
+      };
     }
     const scaled = totalLinear * speed;
     if (scaled >= activeSpan) {
-      return { active: false, progress: reverse ? 0 : 1, finishedOnce: true };
+      return {
+        active: false,
+        progress: reverse ? 0 : 1,
+        finishedOnce: true,
+        movingBackward: reverse,
+      };
     }
     const p = clamp01(scaled / activeSpan);
-    return { active: true, progress: reverse ? 1 - p : p, finishedOnce: false };
+    return {
+      active: true,
+      progress: reverse ? 1 - p : p,
+      finishedOnce: false,
+      movingBackward: reverse,
+    };
   }
 
-  // Periodic loop or pingpong
   const shifted = ((rawPhase - offsetNorm) % 1 + 1) % 1;
   const cyclePos = (shifted * speed) % 1;
 
   if (cyclePos >= activeSpan) {
-    return { active: false, progress: reverse ? 0 : 1, finishedOnce: false };
+    return {
+      active: false,
+      progress: reverse ? 0 : 1,
+      finishedOnce: false,
+      movingBackward: reverse,
+    };
   }
 
   let p = clamp01(cyclePos / activeSpan);
+  let movingBackward = reverse;
   if (loopBehavior === 'pingpong') {
-    p = p < 0.5 ? p * 2 : (1 - p) * 2;
+    if (p < 0.5) {
+      p = p * 2;
+    } else {
+      p = (1 - p) * 2;
+      movingBackward = !reverse;
+    }
   }
   if (reverse) {
     p = 1 - p;
   }
-  return { active: true, progress: p, finishedOnce: false };
+  return { active: true, progress: p, finishedOnce: false, movingBackward };
 }
 
 /**
- * Smooth taper envelope (0 at ends, 1 in middle).
- */
-function taperFactor(t: number, shape: StrokeShape): number {
-  if (shape === 'taper') {
-    return Math.pow(Math.sin(Math.PI * clamp01(t)), 0.62);
-  }
-  if (shape === 'double') {
-    return 0.25 + 0.75 * Math.pow(Math.sin(Math.PI * clamp01(t)), 0.45);
-  }
-  return 1;
-}
-
-/**
- * Renders a smooth variable-width ribbon supporting per-point opacity fading
- * so open strokes melt gracefully in and out without abrupt cuts.
+ * Renders a smooth variable-width ribbon supporting per-point opacity fading.
  */
 function drawRibbonWithSoftAlpha(
   ctx: CanvasRenderingContext2D,
@@ -147,7 +187,6 @@ function drawRibbonWithSoftAlpha(
 ): void {
   if (pts.length < 2) return;
 
-  // Fast path: uniform alpha across all points
   let minA = 1;
   let maxA = 0;
   for (let i = 0; i < pts.length; i++) {
@@ -162,7 +201,7 @@ function drawRibbonWithSoftAlpha(
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     const { nx, ny } = getPointNormal(pts, i);
-    const halfW = Math.max(0.25, p.width * 0.5);
+    const halfW = Math.max(0.22, p.width * 0.5);
     leftSide.push({ x: p.x + nx * halfW, y: p.y + ny * halfW });
     rightSide.push({ x: p.x - nx * halfW, y: p.y - ny * halfW });
   }
@@ -183,7 +222,6 @@ function drawRibbonWithSoftAlpha(
     ctx.closePath();
     ctx.fill();
   } else {
-    // Draw small overlapping quads with smoothly varying alpha so ends dissolve softly
     for (let i = 0; i < pts.length - 1; i++) {
       const segAlpha = (pts[i].alpha + pts[i + 1].alpha) * 0.5;
       if (segAlpha <= 0.008) continue;
@@ -198,7 +236,6 @@ function drawRibbonWithSoftAlpha(
     }
   }
 
-  // Smooth rounded endcaps when shape is round
   if (capStyle === 'round') {
     const first = pts[0];
     const last = pts[pts.length - 1];
@@ -220,6 +257,296 @@ function drawRibbonWithSoftAlpha(
 }
 
 /**
+ * Realistic multi-bristle ink/gouache brush (`brush`).
+ */
+function drawBristleBrushShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number,
+  textureNorm: number,
+  seed: number
+): void {
+  if (pts.length < 2) return;
+
+  // Soft translucent ink core for rich continuity
+  const corePts = pts.map((p) => ({
+    ...p,
+    width: p.width * (0.85 - textureNorm * 0.25),
+    alpha: p.alpha * (0.62 - textureNorm * 0.22),
+  }));
+  drawRibbonWithSoftAlpha(ctx, corePts, color, baseOpacity, 'taper');
+
+  // Parallel organic bristles following stroke normals
+  const bristleCount = 5 + Math.round(textureNorm * 4);
+  const spreadFactor = 0.34 + textureNorm * 0.24;
+
+  for (let b = 0; b < bristleCount; b++) {
+    const normPos = bristleCount > 1 ? (b / (bristleCount - 1)) * 2 - 1 : 0; // -1..1
+    const bristleSeed = seed + b * 37.3;
+    const widthFactor = 0.16 + Math.abs(hashSigned(bristleSeed * 1.7)) * 0.16;
+    const opacityFactor = 0.45 + Math.abs(hashSigned(bristleSeed * 2.9)) * 0.55;
+    const offsetJitter = hashSigned(bristleSeed * 4.1) * 0.12;
+
+    const strand: ComputedPoint[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const { nx, ny } = getPointNormal(pts, i);
+      const dryBreak = smoothNoise1D(p.dist * 0.035, bristleSeed);
+      // Outer bristles subtly break into dry-brush streaks when texture is high
+      const edgeDryness = Math.abs(normPos) * textureNorm;
+      const dryAlpha = dryBreak < -0.35 + edgeDryness * 0.45 ? 0.12 : 1;
+      const lateral = (normPos + offsetJitter + dryBreak * 0.08) * p.width * spreadFactor;
+
+      strand.push({
+        x: p.x + nx * lateral,
+        y: p.y + ny * lateral,
+        width: Math.max(0.6, p.width * widthFactor),
+        alpha: p.alpha * opacityFactor * dryAlpha,
+        dist: p.dist,
+      });
+    }
+
+    drawRibbonWithSoftAlpha(ctx, strand, color, baseOpacity, 'taper');
+  }
+}
+
+/**
+ * Realistic graphite pencil (`pencil`) with fine dark core + paper-tooth micro-grain.
+ */
+function drawPencilShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number,
+  textureNorm: number,
+  seed: number
+): void {
+  if (pts.length < 2) return;
+
+  // Fine crisp graphite core
+  const corePts = pts.map((p, i) => {
+    const grain = smoothNoise1D(p.dist * 0.22, seed + i * 0.01);
+    return {
+      ...p,
+      width: Math.max(0.7, p.width * (0.48 + grain * 0.1)),
+      alpha: p.alpha * (0.65 - textureNorm * 0.18 + Math.abs(grain) * 0.25),
+    };
+  });
+  drawRibbonWithSoftAlpha(ctx, corePts, color, baseOpacity, 'round');
+
+  // Paper tooth speckles along the stroke
+  ctx.save();
+  ctx.fillStyle = color;
+  const grainsPerSample = 2 + Math.round(textureNorm * 4);
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.alpha <= 0.01 || p.width <= 0.4) continue;
+    const { nx, ny } = getPointNormal(pts, i);
+    const idx = Math.floor(p.dist * 0.85);
+    const radius = p.width * (0.42 + textureNorm * 0.2);
+
+    for (let g = 0; g < grainsPerSample; g++) {
+      const h1 = hashSigned(idx * 9.7 + g * 23.3 + seed * 0.19);
+      const h2 = hashSigned(idx * 13.1 + g * 37.7 + seed * 0.31);
+      const h3 = Math.abs(hashSigned(idx * 5.9 + g * 17.3 + seed * 0.11));
+      if (h3 < 0.25) continue;
+
+      const gx = p.x + nx * h1 * radius + h2 * radius * 0.25;
+      const gy = p.y + ny * h1 * radius - h2 * radius * 0.25;
+      const dab = Math.max(0.55, p.width * (0.07 + h3 * 0.1));
+
+      ctx.globalAlpha = baseOpacity * p.alpha * (0.28 + h3 * 0.55);
+      ctx.fillRect(gx - dab * 0.5, gy - dab * 0.5, dab, dab);
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Realistic dry pastel / charcoal (`chalk`) with rich toothy paper coverage.
+ */
+function drawChalkShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number,
+  textureNorm: number,
+  seed: number
+): void {
+  if (pts.length < 2) return;
+
+  ctx.save();
+  ctx.fillStyle = color;
+  const dabs = 4 + Math.round(textureNorm * 4);
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.alpha <= 0.01 || p.width <= 0.4) continue;
+    const { nx, ny } = getPointNormal(pts, i);
+    const grainIndex = Math.floor(p.dist * 0.55);
+    const radius = p.width * (0.48 + textureNorm * 0.16);
+
+    for (let g = 0; g < dabs; g++) {
+      const h1 = hashSigned(grainIndex * 7.3 + g * 19.1 + seed * 0.13);
+      const h2 = hashSigned(grainIndex * 11.7 + g * 31.4 + seed * 0.29);
+      const h3 = Math.abs(hashSigned(grainIndex * 5.1 + g * 13.7 + seed * 0.07));
+      if (h3 < 0.14 + textureNorm * 0.12) continue;
+
+      const gx = p.x + nx * h1 * radius + h2 * radius * 0.38;
+      const gy = p.y + ny * h1 * radius - h2 * radius * 0.38;
+      const dabSize = Math.max(0.9, p.width * (0.1 + h3 * 0.18));
+
+      ctx.globalAlpha = baseOpacity * p.alpha * (0.3 + h3 * 0.58);
+      ctx.beginPath();
+      ctx.arc(gx, gy, dabSize, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Realistic translucent watercolor wash (`watercolor`) with soft wet-edge pigment blooms.
+ */
+function drawWatercolorShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number,
+  textureNorm: number,
+  seed: number
+): void {
+  if (pts.length < 2) return;
+
+  // 3 stacked organic slightly-wobbled translucent wash layers
+  for (let layer = 0; layer < 3; layer++) {
+    const scaleW = layer === 0 ? 1.18 : layer === 1 ? 0.96 : 0.72;
+    const layerAlpha = layer === 0 ? 0.22 : layer === 1 ? 0.32 : 0.28;
+    const wobbleAmp = (0.08 + textureNorm * 0.16) * (layer + 1) * 0.45;
+
+    const washPts: ComputedPoint[] = pts.map((p, i) => {
+      const { nx, ny } = getPointNormal(pts, i);
+      const n = smoothNoise1D(p.dist * 0.028, seed + layer * 43.1);
+      const wJitter = 1 + n * wobbleAmp;
+      return {
+        x: p.x + nx * n * p.width * wobbleAmp * 0.5,
+        y: p.y + ny * n * p.width * wobbleAmp * 0.5,
+        width: Math.max(0.8, p.width * scaleW * wJitter),
+        alpha: p.alpha * layerAlpha,
+        dist: p.dist,
+      };
+    });
+
+    drawRibbonWithSoftAlpha(ctx, washPts, color, baseOpacity, 'round');
+  }
+
+  // Subtle darker wet-edge pigment rims along outer borders
+  if (textureNorm > 0.15) {
+    const leftRim: ComputedPoint[] = [];
+    const rightRim: ComputedPoint[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const { nx, ny } = getPointNormal(pts, i);
+      const n = smoothNoise1D(p.dist * 0.032, seed + 91.7);
+      const edgeOffset = p.width * (0.52 + n * 0.06);
+      const rimW = Math.max(0.9, p.width * 0.13);
+      const rimA = p.alpha * (0.18 + textureNorm * 0.22);
+      leftRim.push({ x: p.x + nx * edgeOffset, y: p.y + ny * edgeOffset, width: rimW, alpha: rimA, dist: p.dist });
+      rightRim.push({ x: p.x - nx * edgeOffset, y: p.y - ny * edgeOffset, width: rimW, alpha: rimA, dist: p.dist });
+    }
+    drawRibbonWithSoftAlpha(ctx, leftRim, color, baseOpacity, 'round');
+    drawRibbonWithSoftAlpha(ctx, rightRim, color, baseOpacity, 'round');
+  }
+}
+
+/**
+ * Chisel-tip felt marker (`marker`) with fixed calligraphic nib angle (~38°).
+ */
+function drawMarkerShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number
+): void {
+  if (pts.length < 2) return;
+
+  const nibAngle = (38 * Math.PI) / 180;
+  const nibX = Math.cos(nibAngle);
+  const nibY = Math.sin(nibAngle);
+
+  ctx.save();
+  ctx.fillStyle = color;
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const segAlpha = (a.alpha + b.alpha) * 0.5;
+    if (segAlpha <= 0.008) continue;
+
+    const ha = Math.max(0.4, a.width * 0.52);
+    const hb = Math.max(0.4, b.width * 0.52);
+
+    ctx.globalAlpha = baseOpacity * segAlpha;
+    ctx.beginPath();
+    ctx.moveTo(a.x - nibX * ha, a.y - nibY * ha);
+    ctx.lineTo(a.x + nibX * ha, a.y + nibY * ha);
+    ctx.lineTo(b.x + nibX * hb, b.y + nibY * hb);
+    ctx.lineTo(b.x - nibX * hb, b.y - nibY * hb);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Deterministic airbrush / ink spray (`spray`) with soft Gaussian-like core distribution.
+ */
+function drawSprayShape(
+  ctx: CanvasRenderingContext2D,
+  pts: ComputedPoint[],
+  color: string,
+  baseOpacity: number,
+  textureNorm: number,
+  seed: number
+): void {
+  if (pts.length < 2) return;
+
+  ctx.save();
+  ctx.fillStyle = color;
+  const particlesPerPoint = 5 + Math.round(textureNorm * 7);
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.alpha <= 0.01 || p.width <= 0.4) continue;
+    const idx = Math.floor(p.dist * 0.6);
+    const maxRadius = p.width * (0.65 + textureNorm * 0.65);
+
+    for (let k = 0; k < particlesPerPoint; k++) {
+      const a = hashSigned(idx * 13.7 + k * 29.1 + seed * 0.17) * Math.PI;
+      // Multiply two randoms to concentrate particles gently toward the center
+      const r1 = Math.abs(hashSigned(idx * 7.1 + k * 41.3 + seed * 0.23));
+      const r2 = Math.abs(hashSigned(idx * 19.3 + k * 11.7 + seed * 0.37));
+      const distR = r1 * r2 * maxRadius;
+      const size = Math.max(0.65, p.width * (0.04 + (1 - r1) * 0.09));
+
+      const px = p.x + Math.cos(a) * distR;
+      const py = p.y + Math.sin(a) * distR;
+
+      ctx.globalAlpha = baseOpacity * p.alpha * (0.2 + (1 - r1 * r2) * 0.6);
+      ctx.beginPath();
+      ctx.arc(px, py, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
  * Renders animated dots / pearls spaced cleanly along the path.
  */
 function drawDotsShape(
@@ -227,10 +554,11 @@ function drawDotsShape(
   pts: ComputedPoint[],
   color: string,
   baseOpacity: number,
-  baseWidth: number
+  baseWidth: number,
+  textureNorm: number
 ): void {
   if (pts.length < 2) return;
-  const spacing = Math.max(8, baseWidth * 1.45);
+  const spacing = Math.max(7, baseWidth * (1.1 + textureNorm * 0.9));
 
   ctx.save();
   ctx.fillStyle = color;
@@ -263,66 +591,25 @@ function drawDotsShape(
 }
 
 /**
- * Renders deterministic textured chalk / charcoal dry-brush grain along the path.
- */
-function drawChalkShape(
-  ctx: CanvasRenderingContext2D,
-  pts: ComputedPoint[],
-  color: string,
-  baseOpacity: number,
-  seed: number
-): void {
-  if (pts.length < 2) return;
-
-  ctx.save();
-  ctx.fillStyle = color;
-
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
-    if (p.alpha <= 0.01 || p.width <= 0.4) continue;
-    const { nx, ny } = getPointNormal(pts, i);
-    const grainIndex = Math.floor(p.dist * 0.55);
-    const radius = p.width * 0.55;
-
-    // 4 deterministic micro-bristle dabs per sample
-    for (let g = 0; g < 4; g++) {
-      const h1 = hashSigned(grainIndex * 7.3 + g * 19.1 + seed * 0.13);
-      const h2 = hashSigned(grainIndex * 11.7 + g * 31.4 + seed * 0.29);
-      const h3 = Math.abs(hashSigned(grainIndex * 5.1 + g * 13.7 + seed * 0.07));
-      if (h3 < 0.18) continue;
-
-      const gx = p.x + nx * h1 * radius + h2 * radius * 0.35;
-      const gy = p.y + ny * h1 * radius - h2 * radius * 0.35;
-      const dabSize = Math.max(0.9, p.width * (0.12 + h3 * 0.19));
-
-      ctx.globalAlpha = baseOpacity * p.alpha * (0.35 + h3 * 0.55);
-      ctx.beginPath();
-      ctx.arc(gx, gy, dabSize, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  ctx.restore();
-}
-
-/**
- * Renders parallel twin lines (double stroke) along the path normal.
+ * Renders parallel twin lines (`double`) with separation tuned by `textureNorm`.
  */
 function drawDoubleShape(
   ctx: CanvasRenderingContext2D,
   pts: ComputedPoint[],
   color: string,
-  baseOpacity: number
+  baseOpacity: number,
+  textureNorm: number
 ): void {
   if (pts.length < 2) return;
   const upper: ComputedPoint[] = [];
   const lower: ComputedPoint[] = [];
+  const sepFactor = 0.28 + textureNorm * 0.35;
 
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     const { nx, ny } = getPointNormal(pts, i);
-    const sep = Math.max(2.2, p.width * 0.42);
-    const lineW = Math.max(1.2, p.width * 0.28);
+    const sep = Math.max(2, p.width * sepFactor);
+    const lineW = Math.max(1.2, p.width * 0.26);
     upper.push({ x: p.x + nx * sep, y: p.y + ny * sep, width: lineW, alpha: p.alpha, dist: p.dist });
     lower.push({ x: p.x - nx * sep, y: p.y - ny * sep, width: lineW, alpha: p.alpha, dist: p.dist });
   }
@@ -341,21 +628,34 @@ function renderShapeGeometry(
   baseOpacity: number,
   baseWidth: number,
   shape: StrokeShape,
+  textureNorm: number,
   seed: number
 ): void {
   if (pts.length < 2) return;
   switch (shape) {
-    case 'dots':
-      drawDotsShape(ctx, pts, color, baseOpacity, baseWidth);
+    case 'brush':
+      drawBristleBrushShape(ctx, pts, color, baseOpacity, textureNorm, seed);
+      break;
+    case 'pencil':
+      drawPencilShape(ctx, pts, color, baseOpacity, textureNorm, seed);
       break;
     case 'chalk':
-      drawChalkShape(ctx, pts, color, baseOpacity, seed);
+      drawChalkShape(ctx, pts, color, baseOpacity, textureNorm, seed);
+      break;
+    case 'watercolor':
+      drawWatercolorShape(ctx, pts, color, baseOpacity, textureNorm, seed);
+      break;
+    case 'marker':
+      drawMarkerShape(ctx, pts, color, baseOpacity);
+      break;
+    case 'spray':
+      drawSprayShape(ctx, pts, color, baseOpacity, textureNorm, seed);
+      break;
+    case 'dots':
+      drawDotsShape(ctx, pts, color, baseOpacity, baseWidth, textureNorm);
       break;
     case 'double':
-      drawDoubleShape(ctx, pts, color, baseOpacity);
-      break;
-    case 'square':
-      drawRibbonWithSoftAlpha(ctx, pts, color, baseOpacity, 'square');
+      drawDoubleShape(ctx, pts, color, baseOpacity, textureNorm);
       break;
     case 'round':
       drawRibbonWithSoftAlpha(ctx, pts, color, baseOpacity, 'round');
@@ -433,8 +733,7 @@ function sampleStrokeAt(stroke: AnimatedStroke, u: number): StrokePoint {
 }
 
 /**
- * Extracts a smooth sub-segment of a stroke between normalized arc positions [uStart, uEnd]
- * with per-point width and alpha functions.
+ * Extracts a smooth sub-segment of a stroke between normalized arc positions [uStart, uEnd].
  */
 function extractSegment(
   stroke: AnimatedStroke,
@@ -507,8 +806,9 @@ function renderStroke(
   const baseW = params.width;
   const ampNorm = clamp01(params.amplitude / 100);
   const lenNorm = clamp01(params.length / 100);
+  const taperNorm = clamp01((params.taper ?? 70) / 100);
+  const textureNorm = clamp01((params.texture ?? 55) / 100);
 
-  // Subtle selection halo drawn underneath the stroke
   if (isSelected) {
     drawSimplePolyline(ctx, points, '#1D4ED8', baseW + 10, 0.22);
   }
@@ -521,12 +821,21 @@ function renderStroke(
       return {
         x: p.x,
         y: p.y,
-        width: baseW * pressureScale * taperFactor(u, params.shape),
+        width: baseW * pressureScale * symmetricTaper(u, taperNorm),
         alpha: edgeFade,
         dist: stroke.arcLengths[i],
       };
     });
-    renderShapeGeometry(ctx, staticPts, params.color, params.opacity, baseW, params.shape, stroke.seed);
+    renderShapeGeometry(
+      ctx,
+      staticPts,
+      params.color,
+      params.opacity,
+      baseW,
+      params.shape,
+      textureNorm,
+      stroke.seed
+    );
     return;
   }
 
@@ -540,7 +849,6 @@ function renderStroke(
     loopIndex
   );
 
-  // Selected ghost path guide so user can always see the stroke even during pause gaps
   if (isSelected && (!clock.active || params.mode === 'flow' || params.mode === 'draw')) {
     drawSimplePolyline(ctx, points, params.color, Math.max(1.5, baseW * 0.22), 0.16);
   }
@@ -550,10 +858,10 @@ function renderStroke(
       if (!clock.active) return;
 
       const count = Math.max(1, Math.round(params.frequency));
-      const duty = 0.1 + lenNorm * 0.76;
+      const duty = 0.12 + lenNorm * 0.74;
 
       if (isClosed && params.loopBehavior === 'loop' && params.repeatDelay === 0) {
-        // True closed loop: ribbons wrap seamlessly around the joined contour
+        // True closed loop: ribbons glide smoothly around the joined contour in exact drawn order
         const slotSpan = 1 / count;
         const ribbonLen = slotSpan * duty;
         const headShift = clock.progress;
@@ -564,13 +872,14 @@ function renderStroke(
 
           const evalClosed = (globalT: number, p: StrokePoint) => {
             const pressureScale = 0.72 + p.pressure * 0.55;
-            const wEnv = taperFactor(globalT, params.shape);
-            const softTail = params.softEdges
-              ? smoothstep(0, 0.22, globalT) * smoothstep(0, 0.22, 1 - globalT)
-              : 1;
+            const { widthMul, alphaMul } = directionalRibbonProfile(
+              globalT,
+              taperNorm,
+              clock.movingBackward
+            );
             return {
-              width: baseW * pressureScale * wEnv,
-              alpha: softTail,
+              width: baseW * pressureScale * widthMul,
+              alpha: params.softEdges ? alphaMul : 1,
             };
           };
 
@@ -580,7 +889,16 @@ function renderStroke(
             const seg = extractSegment(stroke, u0, u1, (_u, lt, pt) =>
               evalClosed(tOffset + lt * tScale, pt)
             );
-            renderShapeGeometry(ctx, seg, params.color, params.opacity, baseW, params.shape, stroke.seed);
+            renderShapeGeometry(
+              ctx,
+              seg,
+              params.color,
+              params.opacity,
+              baseW,
+              params.shape,
+              textureNorm,
+              stroke.seed
+            );
           };
 
           if (rawEnd <= 1) {
@@ -593,19 +911,20 @@ function renderStroke(
           }
         }
       } else {
-        // Open path (never cuts off abruptly!):
-        // Each ribbon enters smoothly from u = 0 and exits smoothly past u = 1 with soft tapering/fading.
-        const ribbonSpan = (0.14 + lenNorm * 0.65) / Math.max(1, Math.sqrt(count));
-        const travelRange = 1 + ribbonSpan; // Sweeps cleanly from -ribbonSpan to 1
+        // Open path: strictly travels from 1st point (u=0) -> last point (u=1) with directional head/tail
+        // and silky entry/exit softening so nothing ever stops abruptly.
+        const ribbonSpan = (0.15 + lenNorm * 0.65) / Math.max(1, Math.sqrt(count));
+        const travelRange = 1 + ribbonSpan;
         const spacing = travelRange / count;
 
         for (let k = 0; k < count; k++) {
           let rawStart: number;
           if (params.loopBehavior === 'loop') {
-            rawStart = ((clock.progress * travelRange + k * spacing) % travelRange) - ribbonSpan;
+            // Subtract k * spacing so ribbon #0 leads and ribbon #1 follows behind it!
+            const rawPos = ((clock.progress * travelRange - k * spacing) % travelRange + travelRange) % travelRange;
+            rawStart = rawPos - ribbonSpan;
           } else {
-            // Ping-pong or once: stagger ribbons cleanly inside [0..1]
-            const stagger = count > 1 ? (k / count) * (1 - ribbonSpan * 0.5) : 0;
+            const stagger = count > 1 ? (k / count) * (1 - ribbonSpan * 0.45) : 0;
             rawStart = clock.progress * travelRange - ribbonSpan - stagger;
           }
           const rawEnd = rawStart + ribbonSpan;
@@ -618,35 +937,40 @@ function renderStroke(
           const uEnd = mapProgressToArcU(stroke, visPEnd, params.followDrawingSpeed);
 
           const seg = extractSegment(stroke, uStart, uEnd, (u, localT, pt) => {
-            // Position along the unclipped virtual ribbon (0 = tail, 1 = head)
             const segP = visPStart + localT * (visPEnd - visPStart);
             const ribbonT = clamp01((segP - rawStart) / ribbonSpan);
             const pressureScale = 0.72 + pt.pressure * 0.55;
 
-            // Smooth tip taper + entry/exit edge softening so the stroke NEVER stops harshly
             const edgeFade = openEdgeEnvelope(u, isClosed, params.softEdges);
-            const tipEnvelope = params.softEdges
-              ? smoothstep(0, 0.25, ribbonT) * smoothstep(0, 0.25, 1 - ribbonT)
-              : 1;
-            const localCapTaper =
-              params.shape === 'taper'
-                ? Math.pow(Math.sin(Math.PI * ribbonT), 0.55) * Math.pow(Math.sin(Math.PI * localT), 0.35)
-                : taperFactor(ribbonT, params.shape);
+            const { widthMul, alphaMul } = directionalRibbonProfile(
+              ribbonT,
+              taperNorm,
+              clock.movingBackward
+            );
+            const softEndWidth = params.softEdges ? 0.2 + 0.8 * edgeFade : 1;
 
             return {
-              width: baseW * pressureScale * localCapTaper * (params.softEdges ? 0.25 + 0.75 * edgeFade : 1),
-              alpha: edgeFade * tipEnvelope,
+              width: baseW * pressureScale * widthMul * softEndWidth,
+              alpha: edgeFade * (params.softEdges ? alphaMul : 1),
             };
           });
 
-          renderShapeGeometry(ctx, seg, params.color, params.opacity, baseW, params.shape, stroke.seed);
+          renderShapeGeometry(
+            ctx,
+            seg,
+            params.color,
+            params.opacity,
+            baseW,
+            params.shape,
+            textureNorm,
+            stroke.seed
+          );
         }
       }
       break;
     }
 
     case 'draw': {
-      // If 'once' completed, keep the drawn stroke gracefully visible when length >= 90%, else clean finish
       if (!clock.active) {
         if (clock.finishedOnce && lenNorm >= 0.85) {
           const fullPts: ComputedPoint[] = points.map((p, i) => {
@@ -655,12 +979,21 @@ function renderStroke(
             return {
               x: p.x,
               y: p.y,
-              width: baseW * pressureScale * taperFactor(u, params.shape),
+              width: baseW * pressureScale * symmetricTaper(u, taperNorm),
               alpha: openEdgeEnvelope(u, isClosed, params.softEdges),
               dist: stroke.arcLengths[i],
             };
           });
-          renderShapeGeometry(ctx, fullPts, params.color, params.opacity, baseW, params.shape, stroke.seed);
+          renderShapeGeometry(
+            ctx,
+            fullPts,
+            params.color,
+            params.opacity,
+            baseW,
+            params.shape,
+            textureNorm,
+            stroke.seed
+          );
         }
         return;
       }
@@ -698,21 +1031,31 @@ function renderStroke(
         const seg = extractSegment(stroke, uStart, uEnd, (u, lt, pt) => {
           const pressureScale = 0.72 + pt.pressure * 0.55;
           const edgeFade = openEdgeEnvelope(u, isClosed, params.softEdges);
-          const tipFade = params.softEdges
-            ? smoothstep(0, 0.16, lt) * smoothstep(0, 0.16, 1 - lt)
-            : 1;
+          const { widthMul, alphaMul } = directionalRibbonProfile(
+            lt,
+            taperNorm,
+            clock.movingBackward
+          );
           return {
-            width: baseW * pressureScale * taperFactor(lt, params.shape),
-            alpha: edgeFade * tipFade * fadeAlpha,
+            width: baseW * pressureScale * widthMul,
+            alpha: edgeFade * (params.softEdges ? alphaMul : 1) * fadeAlpha,
           };
         });
-        renderShapeGeometry(ctx, seg, params.color, params.opacity, baseW, params.shape, stroke.seed);
+        renderShapeGeometry(
+          ctx,
+          seg,
+          params.color,
+          params.opacity,
+          baseW,
+          params.shape,
+          textureNorm,
+          stroke.seed
+        );
       }
       break;
     }
 
     case 'boil': {
-      // Hand-drawn cel-animation boil (freezes gently during repeatDelay pause)
       const celSteps = Math.max(3, Math.round(3 + params.frequency * 1.5));
       const frameIdx = clock.active ? Math.floor(clock.progress * celSteps) % celSteps : 0;
       const maxDisp = 1.2 + ampNorm * 14;
@@ -729,13 +1072,22 @@ function renderStroke(
         return {
           x: p.x + nx * n1 * maxDisp + n2 * maxDisp * 0.25,
           y: p.y + ny * n1 * maxDisp - n2 * maxDisp * 0.25,
-          width: baseW * pressureScale * taperFactor(u, params.shape),
+          width: baseW * pressureScale * symmetricTaper(u, taperNorm),
           alpha: edgeFade,
           dist: stroke.arcLengths[i],
         };
       });
 
-      renderShapeGeometry(ctx, boiled, params.color, params.opacity, baseW, params.shape, stroke.seed);
+      renderShapeGeometry(
+        ctx,
+        boiled,
+        params.color,
+        params.opacity,
+        baseW,
+        params.shape,
+        textureNorm,
+        stroke.seed
+      );
       break;
     }
 
@@ -756,13 +1108,22 @@ function renderStroke(
         return {
           x: p.x + nx * offset,
           y: p.y + ny * offset,
-          width: baseW * pressureScale * taperFactor(u, params.shape),
+          width: baseW * pressureScale * symmetricTaper(u, taperNorm),
           alpha: edgeFade,
           dist: stroke.arcLengths[i],
         };
       });
 
-      renderShapeGeometry(ctx, waved, params.color, params.opacity, baseW, params.shape, stroke.seed);
+      renderShapeGeometry(
+        ctx,
+        waved,
+        params.color,
+        params.opacity,
+        baseW,
+        params.shape,
+        textureNorm,
+        stroke.seed
+      );
       break;
     }
 
@@ -781,13 +1142,22 @@ function renderStroke(
         return {
           x: p.x,
           y: p.y,
-          width: Math.max(0.8, baseW * pressureScale * multiplier * taperFactor(u, params.shape)),
+          width: Math.max(0.8, baseW * pressureScale * multiplier * symmetricTaper(u, taperNorm)),
           alpha: edgeFade,
           dist: stroke.arcLengths[i],
         };
       });
 
-      renderShapeGeometry(ctx, pulsed, params.color, params.opacity, baseW, params.shape, stroke.seed);
+      renderShapeGeometry(
+        ctx,
+        pulsed,
+        params.color,
+        params.opacity,
+        baseW,
+        params.shape,
+        textureNorm,
+        stroke.seed
+      );
       break;
     }
   }

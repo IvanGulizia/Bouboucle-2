@@ -47,6 +47,7 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('stroke');
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [restartLoopNonce, setRestartLoopNonce] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previousObjectUrlRef = useRef<string | null>(null);
@@ -142,9 +143,13 @@ export default function App() {
 
   const handleAddStroke = useCallback(
     (stroke: AnimatedStroke) => {
+      if (strokes.length === 0) {
+        // Launch cleanly from point 1 -> last point on the very first stroke
+        setRestartLoopNonce((n) => n + 1);
+      }
       commitStrokes((prev) => [...prev, stroke]);
     },
-    [commitStrokes]
+    [commitStrokes, strokes.length]
   );
 
   const handleEraseStrokeIds = useCallback(
@@ -171,7 +176,6 @@ export default function App() {
       const keys = Object.keys(patch) as (keyof StrokeParams)[];
       const hasKeys = keys.length > 0;
 
-      // Clear active preset highlight when modifying structural brush params (keep highlight if only color changes)
       if (hasKeys && !selectedStrokeId && keys.some((k) => k !== 'color')) {
         setActivePresetId(null);
       }
@@ -254,9 +258,10 @@ export default function App() {
   }, [selectedStrokeId, commitStrokes]);
 
   const handleClearAllStrokes = useCallback(() => {
+    if (strokes.length === 0) return;
     commitStrokes([]);
     setSelectedStrokeId(null);
-  }, [commitStrokes]);
+  }, [commitStrokes, strokes.length]);
 
   const handleTriggerFilePicker = useCallback(() => {
     fileInputRef.current?.click();
@@ -359,7 +364,7 @@ export default function App() {
           handleUpdateParams({ width: Math.max(2, effectiveParams.width - 2) }, true);
           break;
         case ']':
-          handleUpdateParams({ width: Math.min(48, effectiveParams.width + 2) }, true);
+          handleUpdateParams({ width: Math.min(56, effectiveParams.width + 2) }, true);
           break;
         default:
           break;
@@ -398,10 +403,15 @@ export default function App() {
       <TopBar
         canvasConfig={canvasConfig}
         hasBackgroundImage={Boolean(backgroundImage)}
+        strokeCount={strokes.length}
         isPlaying={isPlaying}
         canUndo={canUndo}
         canRedo={canRedo}
         onTogglePlay={() => setIsPlaying((v) => !v)}
+        onRestartLoop={() => {
+          setRestartLoopNonce((n) => n + 1);
+          setIsPlaying(true);
+        }}
         onChangeAspectRatio={(ratio: AspectRatioId) =>
           setCanvasConfig((prev) => ({ ...prev, aspectRatio: ratio }))
         }
@@ -410,6 +420,7 @@ export default function App() {
         }
         onUndo={undo}
         onRedo={redo}
+        onClearAllStrokes={handleClearAllStrokes}
         onOpenExport={() => setExportModalOpen(true)}
       />
 
@@ -423,6 +434,7 @@ export default function App() {
           activeBrush={activeBrush}
           selectedStrokeId={selectedStrokeId}
           isPlaying={isPlaying}
+          restartLoopNonce={restartLoopNonce}
           onAddStroke={handleAddStroke}
           onSelectStroke={handleSelectStroke}
           onEraseStrokeIds={handleEraseStrokeIds}
@@ -474,6 +486,9 @@ export default function App() {
           if (tool !== 'select') setSelectedStrokeId(null);
         }}
         onChangeColor={(hex) => handleUpdateParams({ color: hex }, true)}
+        onChangeWidth={(width, commitHistory) =>
+          handleUpdateParams({ width }, commitHistory ?? false)
+        }
         onChangeMode={(mode: AnimationMode) => handleUpdateParams({ mode }, true)}
         onSelectPreset={handleSelectPreset}
         onToggleInspector={() => setInspectorOpen((v) => !v)}

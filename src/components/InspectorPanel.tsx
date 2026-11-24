@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   ArrowLeftRight,
   Copy,
@@ -20,6 +20,7 @@ import {
   LOOP_BEHAVIORS,
   STROKE_SHAPES,
   StrokeParams,
+  StrokeShape,
 } from '../types/studio';
 
 export type InspectorTab = 'stroke' | 'canvas';
@@ -90,6 +91,27 @@ function getLengthLabel(mode: AnimationMode): string | null {
   }
 }
 
+function getTextureLabel(shape: StrokeShape): string | null {
+  switch (shape) {
+    case 'brush':
+      return 'Séparation des poils';
+    case 'pencil':
+      return 'Grain graphite';
+    case 'chalk':
+      return 'Grain papier';
+    case 'watercolor':
+      return 'Effet bord humide';
+    case 'spray':
+      return 'Dispersion';
+    case 'dots':
+      return 'Espacement des perles';
+    case 'double':
+      return 'Écartement des filets';
+    default:
+      return null;
+  }
+}
+
 interface ToggleRowProps {
   id: string;
   label: string;
@@ -149,18 +171,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onTogglePanImageTool,
   onRemoveImage,
 }) => {
-  const [confirmClear, setConfirmClear] = useState(false);
-
   if (!isOpen) return null;
 
   const freqLabel = getFrequencyLabel(activeParams.mode);
   const ampLabel = getAmplitudeLabel(activeParams.mode);
   const lengthLabel = getLengthLabel(activeParams.mode);
+  const textureLabel = getTextureLabel(activeParams.shape);
 
   return (
     <aside
       aria-label="Réglages de l’atelier"
-      className="fixed top-[68px] right-4 bottom-20 w-[304px] max-w-[calc(100vw-32px)] bg-white/96 backdrop-blur-md border border-[#E4E4E7] rounded-2xl shadow-[0_10px_30px_rgba(0,0,0,0.07)] z-30 flex flex-col overflow-hidden"
+      className="fixed top-[68px] right-4 bottom-20 w-[308px] max-w-[calc(100vw-32px)] bg-white/96 backdrop-blur-md border border-[#E4E4E7] rounded-2xl shadow-[0_10px_30px_rgba(0,0,0,0.07)] z-30 flex flex-col overflow-hidden"
     >
       {/* Header with segmented tab switch */}
       <div className="px-4 py-3 border-b border-[#E4E4E7] flex items-center justify-between gap-2 shrink-0">
@@ -239,7 +260,10 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
             {/* Brush Presets */}
             <div className="space-y-2">
-              <span className="text-xs font-semibold text-[#18181B] block">Pinceaux</span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-[#18181B]">Pinceaux préréglés</span>
+                <span className="text-[11px] text-[#71717A]">{BRUSH_PRESETS.length} styles</span>
+              </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {BRUSH_PRESETS.map((preset) => {
                   const active = preset.id === activePresetId;
@@ -268,11 +292,11 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               </div>
             </div>
 
-            {/* Forme, Taille & Opacité */}
+            {/* Forme, Taille, Opacité, Effilement & Texture */}
             <div className="space-y-4 pt-4 border-t border-[#E4E4E7]">
               <div className="space-y-2">
-                <span className="text-xs font-semibold text-[#18181B] block">Forme du trait</span>
-                <div className="grid grid-cols-3 gap-1.5">
+                <span className="text-xs font-semibold text-[#18181B] block">Matière & forme</span>
+                <div className="grid grid-cols-2 gap-1.5">
                   {STROKE_SHAPES.map((shape) => {
                     const active = activeParams.shape === shape.id;
                     return (
@@ -306,7 +330,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   id="slider-width"
                   type="range"
                   min={2}
-                  max={48}
+                  max={56}
                   step={1}
                   value={activeParams.width}
                   onChange={(e) => onUpdateParams({ width: Number(e.target.value) }, false)}
@@ -336,6 +360,52 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   className="w-full studio-slider"
                 />
               </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <label htmlFor="slider-taper" className="font-medium text-[#18181B]">
+                    Effilement
+                  </label>
+                  <span className="font-mono tabular-nums text-[#71717A]">
+                    {Math.round(activeParams.taper)} %
+                  </span>
+                </div>
+                <input
+                  id="slider-taper"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={activeParams.taper}
+                  onChange={(e) => onUpdateParams({ taper: Number(e.target.value) }, false)}
+                  onPointerUp={() => onUpdateParams({}, true)}
+                  className="w-full studio-slider"
+                />
+              </div>
+
+              {textureLabel && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <label htmlFor="slider-texture" className="font-medium text-[#18181B]">
+                      {textureLabel}
+                    </label>
+                    <span className="font-mono tabular-nums text-[#71717A]">
+                      {Math.round(activeParams.texture)} %
+                    </span>
+                  </div>
+                  <input
+                    id="slider-texture"
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={activeParams.texture}
+                    onChange={(e) => onUpdateParams({ texture: Number(e.target.value) }, false)}
+                    onPointerUp={() => onUpdateParams({}, true)}
+                    className="w-full studio-slider"
+                  />
+                </div>
+              )}
 
               <ToggleRow
                 id="toggle-soft-edges"
@@ -378,7 +448,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
               {activeParams.mode !== 'static' && (
                 <>
-                  {/* Loop Behavior: Boucle / Aller-retour / Une fois */}
+                  {/* Loop Behavior */}
                   <div className="space-y-2">
                     <span className="text-xs font-medium text-[#18181B] block">Répétition</span>
                     <div className="grid grid-cols-3 gap-1 p-0.5 bg-[#F4F4F5] rounded-lg">
@@ -424,7 +494,11 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       <button
                         type="button"
                         onClick={() => onUpdateParams({ reverse: !activeParams.reverse }, true)}
-                        title="Inverser le sens de l’animation"
+                        title={
+                          activeParams.reverse
+                            ? 'Sens inversé (fin → début)'
+                            : 'Sens normal (début → fin)'
+                        }
                         aria-label="Inverser le sens"
                         aria-pressed={activeParams.reverse}
                         className={`h-8 px-2.5 rounded-lg border text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
@@ -449,7 +523,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     />
                   )}
 
-                  {/* Segment Length (Flow / Draw) */}
+                  {/* Segment Length */}
                   {lengthLabel && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">
@@ -501,7 +575,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     </div>
                   )}
 
-                  {/* Amplitude (Boil / Wave / Pulse) */}
+                  {/* Amplitude */}
                   {ampLabel && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">
@@ -528,7 +602,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     </div>
                   )}
 
-                  {/* Repeat Delay / Pause */}
+                  {/* Repeat Delay */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <label htmlFor="slider-delay" className="font-medium text-[#18181B]">
@@ -553,7 +627,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     />
                   </div>
 
-                  {/* Start Phase Offset (for cascading multiple strokes) */}
+                  {/* Start Phase Offset */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <label htmlFor="slider-offset" className="font-medium text-[#18181B]">
@@ -581,7 +655,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               )}
             </div>
 
-            {/* Batch actions */}
+            {/* Batch actions (1-click clear, undoable via Ctrl+Z) */}
             {strokeCount > 0 && (
               <div className="pt-4 border-t border-[#E4E4E7] space-y-2">
                 {strokeCount > 1 && (
@@ -594,35 +668,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   </button>
                 )}
 
-                {!confirmClear ? (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmClear(true)}
-                    className="w-full h-9 px-3 rounded-lg text-xs font-medium text-[#71717A] hover:text-[#DC2626] hover:bg-[#DC2626]/5 transition-colors cursor-pointer"
-                  >
-                    Effacer tous les traits ({strokeCount})
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClearAllStrokes();
-                        setConfirmClear(false);
-                      }}
-                      className="flex-1 h-9 rounded-lg bg-[#DC2626] text-white text-xs font-semibold hover:bg-[#B91C1C] transition-colors cursor-pointer"
-                    >
-                      Confirmer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmClear(false)}
-                      className="flex-1 h-9 rounded-lg border border-[#E4E4E7] text-xs font-medium text-[#52525B] hover:bg-[#F4F4F5] transition-colors cursor-pointer"
-                    >
-                      Annuler
-                    </button>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={onClearAllStrokes}
+                  className="w-full h-9 px-3 rounded-lg text-xs font-medium text-[#71717A] hover:text-[#DC2626] hover:bg-[#DC2626]/5 transition-colors cursor-pointer"
+                >
+                  Tout effacer en 1 clic ({strokeCount})
+                </button>
               </div>
             )}
           </>

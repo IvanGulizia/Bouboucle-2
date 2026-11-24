@@ -1,6 +1,16 @@
 export type AnimationMode = 'flow' | 'boil' | 'wave' | 'draw' | 'pulse' | 'static';
 
-export type StrokeShape = 'taper' | 'round' | 'square' | 'dots' | 'chalk' | 'double';
+export type StrokeShape =
+  | 'taper'
+  | 'brush'
+  | 'pencil'
+  | 'chalk'
+  | 'watercolor'
+  | 'marker'
+  | 'spray'
+  | 'round'
+  | 'dots'
+  | 'double';
 
 export type LoopBehavior = 'loop' | 'pingpong' | 'once';
 
@@ -29,9 +39,13 @@ export interface StrokeParams {
   width: number;
   /** Opacity 0.05..1 */
   opacity: number;
+  /** Tip taper / calligraphic narrowing 0..100 % */
+  taper: number;
+  /** Surface texture / bristle separation / grain intensity 0..100 % */
+  texture: number;
   /** Cycles per loop (1..6) for seamless looping */
   speed: number;
-  /** Reverse animation direction along the stroke */
+  /** Reverse animation direction along the stroke (false = 1st point -> last point) */
   reverse: boolean;
   /** Follow the artist's real drawing velocity recorded while sketching */
   followDrawingSpeed: boolean;
@@ -53,7 +67,7 @@ export interface StrokeParams {
 
 export interface AnimatedStroke {
   id: string;
-  /** Deterministic seed for procedural motion (boil/chalk) */
+  /** Deterministic seed for procedural motion (boil/chalk/brush/spray) */
   seed: number;
   /** Smoothed and resampled world points */
   points: StrokePoint[];
@@ -71,6 +85,7 @@ export interface BrushPreset {
   id: string;
   name: string;
   subtitle: string;
+  category: 'réaliste' | 'graphique';
   params: Partial<StrokeParams>;
 }
 
@@ -81,9 +96,7 @@ export interface BackgroundImage {
   naturalHeight: number;
   opacity: number;
   fit: ImageFitMode;
-  /** User multiplier on top of base fit (0.25..4) */
   scale: number;
-  /** Offset in world units */
   offsetX: number;
   offsetY: number;
 }
@@ -91,7 +104,6 @@ export interface BackgroundImage {
 export interface CanvasConfig {
   aspectRatio: AspectRatioId;
   backgroundColor: string;
-  /** Duration of one complete seamless loop in seconds */
   loopDurationSec: number;
 }
 
@@ -123,10 +135,10 @@ export const ANIMATION_MODES: {
   label: string;
   hint: string;
 }[] = [
-  { id: 'flow', label: 'Flux', hint: 'Segments fluides qui glissent' },
+  { id: 'flow', label: 'Flux', hint: 'Glisse du 1er au dernier point' },
   { id: 'boil', label: 'Frémir', hint: 'Vibration dessin animé' },
   { id: 'wave', label: 'Onde', hint: 'Ondulation fluide continue' },
-  { id: 'draw', label: 'Tracé', hint: 'Apparition et effacement' },
+  { id: 'draw', label: 'Tracé', hint: 'Se dessine puis s’efface' },
   { id: 'pulse', label: 'Pulse', hint: 'Respiration de l’épaisseur' },
   { id: 'static', label: 'Fixe', hint: 'Trait immobile' },
 ];
@@ -135,11 +147,15 @@ export const STROKE_SHAPES: {
   id: StrokeShape;
   label: string;
 }[] = [
-  { id: 'taper', label: 'Effilé' },
+  { id: 'taper', label: 'Plume' },
+  { id: 'brush', label: 'Pinceau' },
+  { id: 'pencil', label: 'Crayon' },
+  { id: 'chalk', label: 'Pastel' },
+  { id: 'watercolor', label: 'Aquarelle' },
+  { id: 'marker', label: 'Feutre' },
+  { id: 'spray', label: 'Spray' },
   { id: 'round', label: 'Rond' },
-  { id: 'square', label: 'Ruban' },
   { id: 'dots', label: 'Perles' },
-  { id: 'chalk', label: 'Craie' },
   { id: 'double', label: 'Double' },
 ];
 
@@ -173,8 +189,10 @@ export const DEFAULT_STROKE_PARAMS: StrokeParams = {
   mode: 'flow',
   shape: 'taper',
   color: '#141416',
-  width: 11,
+  width: 12,
   opacity: 1,
+  taper: 80,
+  texture: 55,
   speed: 1,
   reverse: false,
   followDrawingSpeed: true,
@@ -192,11 +210,14 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     id: 'bouboucle',
     name: 'Bouboucle',
     subtitle: 'Flux effilé continu',
+    category: 'graphique',
     params: {
       mode: 'flow',
       shape: 'taper',
-      width: 11,
+      width: 12,
       opacity: 1,
+      taper: 82,
+      texture: 40,
       speed: 1,
       reverse: false,
       followDrawingSpeed: true,
@@ -208,39 +229,154 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     },
   },
   {
-    id: 'geste-encre',
-    name: 'Plume vive',
-    subtitle: 'Suit votre geste',
+    id: 'pinceau-encre',
+    name: 'Pinceau encre',
+    subtitle: 'Poils souples vivants',
+    category: 'réaliste',
     params: {
-      mode: 'draw',
-      shape: 'taper',
-      width: 10,
-      opacity: 0.95,
+      mode: 'flow',
+      shape: 'brush',
+      width: 18,
+      opacity: 0.94,
+      taper: 78,
+      texture: 62,
       speed: 1,
       reverse: false,
       followDrawingSpeed: true,
       loopBehavior: 'loop',
-      length: 65,
-      repeatDelay: 18,
+      length: 56,
+      frequency: 1,
+      repeatDelay: 10,
       softEdges: true,
     },
   },
   {
-    id: 'crayon-boil',
-    name: 'Crayon animé',
-    subtitle: 'Grain craie frémissant',
+    id: 'crayon-2b',
+    name: 'Crayon 2B',
+    subtitle: 'Graphite frémissant',
+    category: 'réaliste',
     params: {
       mode: 'boil',
-      shape: 'chalk',
-      width: 13,
-      opacity: 0.92,
+      shape: 'pencil',
+      width: 8,
+      opacity: 0.9,
+      taper: 45,
+      texture: 65,
       speed: 1,
       reverse: false,
       followDrawingSpeed: false,
       loopBehavior: 'loop',
-      amplitude: 38,
+      amplitude: 28,
       frequency: 3,
       repeatDelay: 0,
+      softEdges: true,
+    },
+  },
+  {
+    id: 'pastel-sec',
+    name: 'Pastel sec',
+    subtitle: 'Craie texturée papier',
+    category: 'réaliste',
+    params: {
+      mode: 'boil',
+      shape: 'chalk',
+      width: 18,
+      opacity: 0.88,
+      taper: 35,
+      texture: 75,
+      speed: 1,
+      reverse: false,
+      followDrawingSpeed: false,
+      loopBehavior: 'loop',
+      amplitude: 34,
+      frequency: 3,
+      repeatDelay: 0,
+      softEdges: true,
+    },
+  },
+  {
+    id: 'aquarelle',
+    name: 'Aquarelle',
+    subtitle: 'Lavis translucide doux',
+    category: 'réaliste',
+    params: {
+      mode: 'wave',
+      shape: 'watercolor',
+      width: 26,
+      opacity: 0.55,
+      taper: 60,
+      texture: 60,
+      speed: 1,
+      reverse: false,
+      followDrawingSpeed: false,
+      loopBehavior: 'loop',
+      amplitude: 26,
+      frequency: 2,
+      repeatDelay: 0,
+      softEdges: true,
+    },
+  },
+  {
+    id: 'feutre-biseau',
+    name: 'Feutre biseau',
+    subtitle: 'Marqueur calligraphique',
+    category: 'réaliste',
+    params: {
+      mode: 'draw',
+      shape: 'marker',
+      width: 16,
+      opacity: 0.82,
+      taper: 20,
+      texture: 30,
+      speed: 1,
+      reverse: false,
+      followDrawingSpeed: true,
+      loopBehavior: 'loop',
+      length: 62,
+      repeatDelay: 15,
+      softEdges: true,
+    },
+  },
+  {
+    id: 'spray-brume',
+    name: 'Aérographe',
+    subtitle: 'Brume et éclaboussures',
+    category: 'réaliste',
+    params: {
+      mode: 'flow',
+      shape: 'spray',
+      width: 24,
+      opacity: 0.85,
+      taper: 65,
+      texture: 72,
+      speed: 1,
+      reverse: false,
+      followDrawingSpeed: true,
+      loopBehavior: 'loop',
+      length: 55,
+      frequency: 2,
+      repeatDelay: 0,
+      softEdges: true,
+    },
+  },
+  {
+    id: 'plume-vive',
+    name: 'Plume vive',
+    subtitle: 'Rejoue votre écriture',
+    category: 'graphique',
+    params: {
+      mode: 'draw',
+      shape: 'taper',
+      width: 10,
+      opacity: 1,
+      taper: 90,
+      texture: 25,
+      speed: 1,
+      reverse: false,
+      followDrawingSpeed: true,
+      loopBehavior: 'loop',
+      length: 68,
+      repeatDelay: 15,
       softEdges: true,
     },
   },
@@ -248,11 +384,14 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     id: 'perles',
     name: 'Perles filantes',
     subtitle: 'Points en mouvement',
+    category: 'graphique',
     params: {
       mode: 'flow',
       shape: 'dots',
       width: 12,
       opacity: 1,
+      taper: 65,
+      texture: 50,
       speed: 1,
       reverse: false,
       followDrawingSpeed: false,
@@ -264,40 +403,24 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     },
   },
   {
-    id: 'onde-soie',
-    name: 'Onde soyeuse',
-    subtitle: 'Ondulation organique',
-    params: {
-      mode: 'wave',
-      shape: 'taper',
-      width: 9,
-      opacity: 0.9,
-      speed: 1,
-      reverse: false,
-      followDrawingSpeed: false,
-      loopBehavior: 'loop',
-      amplitude: 42,
-      frequency: 3,
-      repeatDelay: 0,
-      softEdges: true,
-    },
-  },
-  {
     id: 'double-fil',
     name: 'Double filet',
     subtitle: 'Lignes parallèles',
+    category: 'graphique',
     params: {
       mode: 'flow',
       shape: 'double',
-      width: 11,
+      width: 12,
       opacity: 0.95,
+      taper: 60,
+      texture: 55,
       speed: 1,
       reverse: false,
       followDrawingSpeed: true,
       loopBehavior: 'loop',
-      length: 44,
+      length: 48,
       frequency: 2,
-      repeatDelay: 12,
+      repeatDelay: 10,
       softEdges: true,
     },
   },
@@ -305,11 +428,14 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     id: 'souffle',
     name: 'Souffle',
     subtitle: 'Aller-retour doux',
+    category: 'graphique',
     params: {
       mode: 'pulse',
       shape: 'round',
       width: 14,
       opacity: 0.85,
+      taper: 40,
+      texture: 30,
       speed: 1,
       reverse: false,
       followDrawingSpeed: false,
@@ -321,14 +447,17 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     },
   },
   {
-    id: 'encre-fixe',
-    name: 'Encre fixe',
-    subtitle: 'Trait calligraphique',
+    id: 'pinceau-fixe',
+    name: 'Pinceau fixe',
+    subtitle: 'Encre réaliste fixe',
+    category: 'réaliste',
     params: {
       mode: 'static',
-      shape: 'taper',
-      width: 9,
-      opacity: 1,
+      shape: 'brush',
+      width: 14,
+      opacity: 0.95,
+      taper: 75,
+      texture: 58,
       softEdges: false,
     },
   },

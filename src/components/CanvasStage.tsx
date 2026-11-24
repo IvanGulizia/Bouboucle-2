@@ -26,6 +26,7 @@ interface CanvasStageProps {
   activeBrush: StrokeParams;
   selectedStrokeId: string | null;
   isPlaying: boolean;
+  restartLoopNonce: number;
   onAddStroke: (stroke: AnimatedStroke) => void;
   onSelectStroke: (strokeId: string | null) => void;
   onEraseStrokeIds: (ids: string[]) => void;
@@ -43,6 +44,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   activeBrush,
   selectedStrokeId,
   isPlaying,
+  restartLoopNonce,
   onAddStroke,
   onSelectStroke,
   onEraseStrokeIds,
@@ -70,6 +72,10 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   );
   const phaseRef = useRef(0);
   const lastTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    phaseRef.current = 0;
+  }, [restartLoopNonce]);
 
   const latestPropsRef = useRef({
     strokes,
